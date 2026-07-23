@@ -268,7 +268,7 @@
 
     <div class="section">
       <h2>Sync between phone &amp; computer</h2>
-      <p class="hint">Optional. Backs your spots up to your own GitHub repo so every device sees the same pins. Needs a one-time setup — token stays only on this device.</p>
+      <p class="hint">Optional. Once set up, syncing is automatic: the app loads the shared library when you open it and saves to the cloud after every change. The buttons below are manual overrides. Your token stays only on this device.</p>
       <label>Repository (owner/name)</label>
       <input type="text" id="ghRepo" placeholder="yourname/markit" autocapitalize="off" autocomplete="off">
       <label>Fine-grained token (contents: read &amp; write)</label>
@@ -374,7 +374,8 @@ function load(key, fallback){
   try{ const v = JSON.parse(localStorage.getItem(key)); return v ?? fallback; }
   catch(e){ return fallback; }
 }
-function saveSpots(){ localStorage.setItem(LS_SPOTS, JSON.stringify(spots)); refreshAll(); }
+function persistLocal(){ localStorage.setItem(LS_SPOTS, JSON.stringify(spots)); refreshAll(); }
+function saveSpots(){ persistLocal(); scheduleCloudPush(); }
 function saveSettings(){ localStorage.setItem(LS_SETTINGS, JSON.stringify(settings)); }
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
 
@@ -771,7 +772,7 @@ function mergeSpots(incoming){
   saveSpots();
 }
 document.getElementById("clearBtn").addEventListener("click", () => {
-  if(!confirm("Delete ALL spots on this device? (Cloud backup, if any, is not touched.)")) return;
+  if(!confirm("Delete ALL spots? If cloud sync is set up, this clears the shared library too.")) return;
   spots = []; saveSpots(); toast("All spots deleted");
 });
 
@@ -801,9 +802,21 @@ function b64encodeUtf8(str){
   return btoa(bin);
 }
 
-document.getElementById("backupBtn").addEventListener("click", async () => {
-  if(!ghReady()) return;
-  syncMsg("Saving to GitHub…");
+let pushTimer = null;
+let pushPending = false;
+
+function scheduleCloudPush(){
+  if(!settings.ghRepo || !settings.ghToken) return;
+  pushPending = true;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => cloudPush(false), 1500);
+}
+
+async function cloudPush(manual){
+  if(manual && !ghReady()) return;
+  if(!settings.ghRepo || !settings.ghToken) return;
+  pushPending = false;
+  if(manual) syncMsg("Saving to GitHub…");
   const base = `https://api.github.com/repos/${settings.ghRepo}/contents/${GH_PATH}`;
   try{
     let sha = null;
@@ -817,27 +830,44 @@ document.getElementById("backupBtn").addEventListener("click", async () => {
     if(sha) body.sha = sha;
     const res = await fetch(base, {method:"PUT", headers: ghHeaders(), body: JSON.stringify(body)});
     if(!res.ok) throw new Error("HTTP " + res.status);
-    syncMsg("✔ Saved to cloud " + new Date().toLocaleTimeString());
+    syncMsg("✔ Synced to cloud " + new Date().toLocaleTimeString());
   }catch(err){
-    syncMsg("Save failed (" + err.message + "). Check repo name and token.");
+    if(manual) syncMsg("Save failed (" + err.message + "). Check repo name and token.");
+    else toast("Cloud sync failed — spot is saved on this device");
   }
-});
+}
 
-document.getElementById("restoreBtn").addEventListener("click", async () => {
-  if(!ghReady()) return;
-  syncMsg("Loading from GitHub…");
+async function cloudPull(manual){
+  if(manual && !ghReady()) return;
+  if(!settings.ghRepo || !settings.ghToken) return;
+  if(manual) syncMsg("Loading from GitHub…");
   const base = `https://api.github.com/repos/${settings.ghRepo}/contents/${GH_PATH}`;
   try{
     const res = await fetch(base, {headers: ghHeaders({"Accept":"application/vnd.github.raw+json"})});
-    if(res.status === 404){ syncMsg("No cloud backup found yet — hit Save to cloud first."); return; }
+    if(res.status === 404){ if(manual) syncMsg("No cloud library yet — hit Save to cloud first."); return; }
     if(!res.ok) throw new Error("HTTP " + res.status);
     const data = JSON.parse(await res.text());
     if(!Array.isArray(data)) throw new Error("bad data");
-    mergeSpots(data);
-    syncMsg("✔ Loaded " + data.length + " spots from cloud");
+    if(pushPending){
+      // user changed something while we were loading — merge instead of replace
+      mergeSpots(data);
+    } else {
+      spots = data;
+      persistLocal();
+    }
+    syncMsg("✔ Up to date with cloud (" + data.length + " spots)");
   }catch(err){
-    syncMsg("Load failed (" + err.message + "). Check repo name and token.");
+    if(manual) syncMsg("Load failed (" + err.message + "). Check repo name and token.");
   }
+}
+
+document.getElementById("backupBtn").addEventListener("click", () => cloudPush(true));
+document.getElementById("restoreBtn").addEventListener("click", () => cloudPull(true));
+
+// auto-sync: pull the shared library on open, and again when the app is brought back to front
+cloudPull(false);
+document.addEventListener("visibilitychange", () => {
+  if(document.visibilityState === "visible" && !pushPending) cloudPull(false);
 });
 
 /* ================= misc ================= */
