@@ -198,6 +198,17 @@
   .catpick button.sel[data-c="fpv"]{background:var(--fpv); color:#0b0f13; border-color:var(--fpv);}
   .catpick button.sel[data-c="misc"]{background:var(--misc); color:#0b0f13; border-color:var(--misc);}
   #photoPreview{width:100%; max-height:200px; object-fit:cover; border-radius:12px; margin-top:8px; display:none;}
+  .placelist{display:flex; flex-direction:column; gap:6px;}
+  .placelist .prow{
+    display:flex; align-items:center; gap:8px; padding:10px 12px;
+    border:1px solid var(--line); border-radius:10px; background:var(--panel2);
+    cursor:pointer; font-size:14px; text-align:left;
+  }
+  .placelist .prow .pname{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600;}
+  .placelist .prow .meta{margin-left:auto; color:var(--muted); font-size:12px; white-space:nowrap; flex:none;}
+  .placelist .prow.sel{border-color:var(--accent); background:rgba(74,222,128,.14);}
+  .placelist .status{color:var(--muted); font-size:13px; padding:2px 2px 4px;}
+  .dplace{font-size:14px; color:var(--accent); margin:6px 0 2px; font-weight:600;}
   .filebtn{
     display:inline-block; margin-top:6px; padding:9px 14px; border-radius:10px;
     background:var(--panel2); border:1px solid var(--line); font-size:14px; font-weight:600; cursor:pointer;
@@ -290,6 +301,7 @@
     <div class="grab"></div>
     <h2 id="dTitle"></h2>
     <span class="badge" id="dBadge"></span>
+    <div class="dplace" id="dPlace"></div>
     <div class="coords" id="dCoords"></div>
     <img class="photo" id="dPhoto" alt="">
     <div class="desc" id="dDesc"></div>
@@ -319,6 +331,8 @@
         <button type="button" data-c="fpv">🚁 FPV</button>
         <button type="button" data-c="misc">📌 Misc</button>
       </div>
+      <label>Link to a real place (optional — for better directions)</label>
+      <div class="placelist" id="placeList"></div>
       <label>Description</label>
       <textarea id="fDesc" placeholder="Notes, conditions, best time to go…"></textarea>
       <label>Photo (optional)</label>
@@ -352,6 +366,8 @@ let addMode = false;
 let editingId = null;      // spot id when editing, null when creating
 let pendingLatLng = null;  // where the new pin goes
 let pendingPhoto = null;   // dataURL chosen in form
+let pendingPlace = null;   // {name, lat, lng, kind} linked real-world place
+let placeFetchSeq = 0;     // guards against stale async place results
 let currentDetailId = null;
 
 function load(key, fallback){
@@ -499,6 +515,7 @@ function openDetail(id){
   const badge = document.getElementById("dBadge");
   badge.textContent = s.cat; badge.className = "badge " + s.cat;
   document.getElementById("dCoords").textContent = s.lat.toFixed(5) + ", " + s.lng.toFixed(5);
+  document.getElementById("dPlace").textContent = s.place ? "📍 " + s.place.name : "";
   const ph = document.getElementById("dPhoto");
   if(s.photo){ ph.src = s.photo; ph.style.display = "block"; }
   else { ph.style.display = "none"; ph.removeAttribute("src"); }
@@ -511,11 +528,17 @@ detailBackdrop.addEventListener("click", e => { if(e.target === detailBackdrop) 
 
 document.getElementById("dApple").addEventListener("click", () => {
   const s = spots.find(x => x.id === currentDetailId); if(!s) return;
-  window.open(`https://maps.apple.com/?ll=${s.lat},${s.lng}&q=${encodeURIComponent(s.title)}`, "_blank");
+  const url = s.place
+    ? `https://maps.apple.com/?q=${encodeURIComponent(s.place.name)}&ll=${s.place.lat},${s.place.lng}`
+    : `https://maps.apple.com/?ll=${s.lat},${s.lng}&q=${encodeURIComponent(s.title)}`;
+  window.open(url, "_blank");
 });
 document.getElementById("dGoogle").addEventListener("click", () => {
   const s = spots.find(x => x.id === currentDetailId); if(!s) return;
-  window.open(`https://www.google.com/maps/search/?api=1&query=${s.lat},${s.lng}`, "_blank");
+  const url = s.place
+    ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(s.place.name + " " + s.place.lat + "," + s.place.lng)}`
+    : `https://www.google.com/maps/search/?api=1&query=${s.lat},${s.lng}`;
+  window.open(url, "_blank");
 });
 document.getElementById("dDelete").addEventListener("click", () => {
   const s = spots.find(x => x.id === currentDetailId); if(!s) return;
@@ -538,6 +561,8 @@ function startForm(existing, latlng){
   editingId = existing ? existing.id : null;
   pendingLatLng = existing ? L.latLng(existing.lat, existing.lng) : latlng;
   pendingPhoto = existing ? existing.photo : null;
+  pendingPlace = existing ? (existing.place || null) : null;
+  fetchNearbyPlaces(pendingLatLng.lat, pendingLatLng.lng);
   document.getElementById("formTitle").textContent = existing ? "Edit spot" : "New spot";
   document.getElementById("fName").value = existing ? existing.title : "";
   document.getElementById("fDesc").value = existing ? (existing.desc || "") : "";
@@ -569,6 +594,103 @@ document.getElementById("fPhoto").addEventListener("change", async (e) => {
   }catch(err){ toast("Couldn't read that photo"); }
 });
 
+/* ---- nearby real places (OpenStreetMap Overpass, free, no key) ---- */
+function haversine(lat1, lng1, lat2, lng2){
+  const R = 6371000, toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1), dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+function prettyKind(tags){
+  const raw = tags.leisure || tags.amenity || tags.tourism || tags.shop || tags.sport ||
+              tags.historic || tags.natural || tags.office || (tags.building ? "building" : "place");
+  return String(raw).replace(/_/g, " ");
+}
+async function fetchNearbyPlaces(lat, lng){
+  const seq = ++placeFetchSeq;
+  const listEl = document.getElementById("placeList");
+  listEl.innerHTML = `<div class="status">Searching for places near this pin…</div>`;
+  const q = `[out:json][timeout:10];
+(
+  nwr(around:200,${lat},${lng})[name][leisure];
+  nwr(around:200,${lat},${lng})[name][amenity];
+  nwr(around:200,${lat},${lng})[name][shop];
+  nwr(around:200,${lat},${lng})[name][tourism];
+  nwr(around:200,${lat},${lng})[name][historic];
+  nwr(around:200,${lat},${lng})[name][sport];
+  nwr(around:200,${lat},${lng})[name][natural];
+  nwr(around:200,${lat},${lng})[name][office];
+  nwr(around:120,${lat},${lng})[name][building];
+);
+out tags center 40;`;
+  let places = [];
+  try{
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 9000);
+    const res = await fetch("https://overpass-api.de/api/interpreter", {
+      method: "POST",
+      body: "data=" + encodeURIComponent(q),
+      signal: ctrl.signal
+    });
+    clearTimeout(timer);
+    if(!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    const seen = {};
+    for(const el of (data.elements || [])){
+      const name = el.tags && el.tags.name;
+      const plat = el.lat ?? (el.center && el.center.lat);
+      const plng = el.lon ?? (el.center && el.center.lon);
+      if(!name || plat == null || seen[name]) continue;
+      seen[name] = true;
+      places.push({name, lat: plat, lng: plng, kind: prettyKind(el.tags),
+                   dist: Math.round(haversine(lat, lng, plat, plng))});
+    }
+    places.sort((a,b) => a.dist - b.dist);
+    places = places.slice(0, 8);
+  }catch(err){
+    if(seq !== placeFetchSeq) return;
+    renderPlaceList([], "Couldn't reach the places database — pin location will be used.");
+    return;
+  }
+  if(seq !== placeFetchSeq) return;
+  renderPlaceList(places, places.length ? null : "No named places found here — pin location will be used.");
+}
+function renderPlaceList(places, statusText){
+  const listEl = document.getElementById("placeList");
+  listEl.innerHTML = "";
+  if(statusText){
+    listEl.innerHTML = `<div class="status">${statusText}</div>`;
+    if(!places.length && !pendingPlace) return;
+  }
+  // keep a previously linked place visible even if the search didn't return it
+  if(pendingPlace && !places.some(p => p.name === pendingPlace.name)){
+    places = [Object.assign({dist: null}, pendingPlace)].concat(places);
+  }
+  const options = [{name: null}].concat(places); // null = plain pin
+  for(const p of options){
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "prow";
+    const isSel = p.name === null ? !pendingPlace : (pendingPlace && pendingPlace.name === p.name);
+    if(isSel) row.classList.add("sel");
+    if(p.name === null){
+      row.innerHTML = `<span class="pname">Just the dropped pin</span><span class="meta">exact spot</span>`;
+    } else {
+      const d = p.dist == null ? "" : (p.dist < 950 ? p.dist + " m" : (p.dist/1000).toFixed(1) + " km");
+      row.innerHTML = `<span class="pname">${esc(p.name)}</span><span class="meta">${esc(p.kind || "")}${d ? " · " + d : ""}</span>`;
+    }
+    row.addEventListener("click", () => {
+      pendingPlace = p.name === null ? null : {name: p.name, lat: p.lat, lng: p.lng, kind: p.kind};
+      listEl.querySelectorAll(".prow").forEach(r => r.classList.remove("sel"));
+      row.classList.add("sel");
+      // auto-fill the name field if it's still empty
+      const nameInput = document.getElementById("fName");
+      if(p.name && !nameInput.value.trim()) nameInput.value = p.name;
+    });
+    listEl.appendChild(row);
+  }
+}
+
 function resizeImage(file, maxDim, quality){
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -595,12 +717,12 @@ document.getElementById("spotForm").addEventListener("submit", (e) => {
   const desc = document.getElementById("fDesc").value.trim();
   if(editingId){
     const s = spots.find(x => x.id === editingId);
-    Object.assign(s, {title, desc, cat: formCat, photo: pendingPhoto});
+    Object.assign(s, {title, desc, cat: formCat, photo: pendingPhoto, place: pendingPlace});
   } else {
     spots.push({
       id: uid(), title, desc, cat: formCat,
       lat: pendingLatLng.lat, lng: pendingLatLng.lng,
-      photo: pendingPhoto, created: Date.now()
+      photo: pendingPhoto, place: pendingPlace, created: Date.now()
     });
   }
   try{ saveSpots(); }
