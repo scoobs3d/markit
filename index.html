@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>MarkIt</title>
+<meta name="description" content="My personal map of skate, FPV, and misc spots.">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#101418">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="MarkIt">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<style>
+  :root{
+    --bg:#101418; --panel:#181e24; --panel2:#212933; --line:#2c3640;
+    --text:#e8edf2; --muted:#8b98a5; --accent:#4ade80;
+    --skate:#fb923c; --fpv:#38bdf8; --misc:#a78bfa;
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-top: env(safe-area-inset-top, 0px);
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0; padding:0; height:100%; overflow:hidden;}
+  body{
+    font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background:var(--bg); color:var(--text);
+    display:flex; flex-direction:column;
+    height:100dvh;
+  }
+
+  /* ---------- Header ---------- */
+  header{
+    padding:calc(10px + var(--safe-top)) 14px 10px;
+    background:var(--panel);
+    border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:10px;
+    z-index:1200; flex:none;
+  }
+  header .logo{font-size:20px; font-weight:800; letter-spacing:.3px;}
+  header .logo span{color:var(--accent);}
+  .chips{display:flex; gap:6px; margin-left:auto; overflow-x:auto;}
+  .chip{
+    border:1px solid var(--line); background:var(--panel2); color:var(--muted);
+    border-radius:999px; padding:6px 12px; font-size:13px; font-weight:600;
+    cursor:pointer; white-space:nowrap; user-select:none;
+  }
+  .chip.active{color:#0b0f13; background:var(--accent); border-color:var(--accent);}
+  .chip.active[data-cat="skate"]{background:var(--skate); border-color:var(--skate);}
+  .chip.active[data-cat="fpv"]{background:var(--fpv); border-color:var(--fpv);}
+  .chip.active[data-cat="misc"]{background:var(--misc); border-color:var(--misc);}
+
+  /* ---------- Main views ---------- */
+  main{flex:1; position:relative; min-height:0;}
+  .view{position:absolute; inset:0; display:none;}
+  .view.active{display:block;}
+  #map{width:100%; height:100%; background:#0d1114;}
+  .leaflet-container{font:inherit;}
+
+  /* map buttons */
+  .map-fab{
+    position:absolute; z-index:1000; border:none; cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+    box-shadow:0 4px 14px rgba(0,0,0,.45);
+  }
+  #addBtn{
+    right:16px; bottom:24px; width:58px; height:58px; border-radius:50%;
+    background:var(--accent); color:#0b0f13; font-size:32px; font-weight:700; line-height:1;
+  }
+  #locateBtn{
+    right:24px; bottom:96px; width:42px; height:42px; border-radius:50%;
+    background:var(--panel); color:var(--text); font-size:20px;
+    border:1px solid var(--line);
+  }
+  #addBanner{
+    position:absolute; top:12px; left:50%; transform:translateX(-50%);
+    z-index:1000; background:var(--panel); border:1px solid var(--line);
+    padding:10px 14px; border-radius:12px; display:none; align-items:center; gap:10px;
+    box-shadow:0 4px 14px rgba(0,0,0,.45); width:max-content; max-width:92%;
+    font-size:14px;
+  }
+  #addBanner.show{display:flex;}
+  #addBanner button{
+    border:none; border-radius:8px; padding:6px 10px; font-size:13px; font-weight:600; cursor:pointer;
+  }
+  #useGpsBtn{background:var(--panel2); color:var(--text); border:1px solid var(--line);}
+  #cancelAddBtn{background:transparent; color:var(--muted);}
+
+  /* colored pin markers */
+  .pin{position:relative; width:30px; height:42px;}
+  .pin .head{
+    position:absolute; top:0; left:0; width:30px; height:30px; border-radius:50% 50% 50% 0;
+    transform:rotate(-45deg); border:2px solid rgba(0,0,0,.35);
+    box-shadow:0 2px 6px rgba(0,0,0,.5);
+  }
+  .pin .dot{
+    position:absolute; top:9px; left:9px; width:12px; height:12px; border-radius:50%;
+    background:rgba(255,255,255,.9); z-index:2;
+  }
+  .pin.skate .head{background:var(--skate);}
+  .pin.fpv .head{background:var(--fpv);}
+  .pin.misc .head{background:var(--misc);}
+
+  /* ---------- Library ---------- */
+  #libraryView{overflow-y:auto; -webkit-overflow-scrolling:touch; padding:14px; padding-bottom:calc(20px + var(--safe-bottom));}
+  #searchBox{
+    width:100%; padding:11px 14px; border-radius:12px; border:1px solid var(--line);
+    background:var(--panel); color:var(--text); font-size:15px; margin-bottom:12px; outline:none;
+  }
+  #searchBox::placeholder{color:var(--muted);}
+  .card{
+    background:var(--panel); border:1px solid var(--line); border-radius:14px;
+    margin-bottom:12px; overflow:hidden; cursor:pointer; display:flex;
+  }
+  .card .thumb{
+    width:92px; min-height:92px; flex:none; background:var(--panel2);
+    background-size:cover; background-position:center;
+    display:flex; align-items:center; justify-content:center; font-size:30px;
+  }
+  .card .body{padding:10px 12px; min-width:0; flex:1;}
+  .card h3{margin:0 0 3px; font-size:16px;}
+  .card p{margin:4px 0 0; font-size:13px; color:var(--muted);
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;}
+  .badge{
+    display:inline-block; font-size:11px; font-weight:700; padding:2px 8px; border-radius:999px;
+    color:#0b0f13; text-transform:uppercase; letter-spacing:.5px;
+  }
+  .badge.skate{background:var(--skate);}
+  .badge.fpv{background:var(--fpv);}
+  .badge.misc{background:var(--misc);}
+  .empty{color:var(--muted); text-align:center; margin-top:60px; font-size:15px; line-height:1.6;}
+
+  /* ---------- Settings ---------- */
+  #settingsView{overflow-y:auto; -webkit-overflow-scrolling:touch; padding:16px; padding-bottom:calc(20px + var(--safe-bottom));}
+  .section{background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px 16px; margin-bottom:14px;}
+  .section h2{margin:0 0 4px; font-size:16px;}
+  .section .hint{font-size:13px; color:var(--muted); margin:0 0 12px; line-height:1.5;}
+  .section label{display:block; font-size:13px; font-weight:600; margin:10px 0 4px;}
+  .section input[type=text], .section input[type=password]{
+    width:100%; padding:10px 12px; border-radius:10px; border:1px solid var(--line);
+    background:var(--panel2); color:var(--text); font-size:14px; outline:none;
+  }
+  .btnrow{display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;}
+  .btn{
+    border:none; border-radius:10px; padding:10px 16px; font-size:14px; font-weight:700;
+    cursor:pointer; background:var(--panel2); color:var(--text); border:1px solid var(--line);
+  }
+  .btn.primary{background:var(--accent); color:#0b0f13; border-color:var(--accent);}
+  .btn.danger{background:#7f1d1d; color:#fecaca; border-color:#7f1d1d;}
+  #syncStatus{font-size:13px; margin-top:10px; color:var(--muted); min-height:18px;}
+
+  /* ---------- Bottom nav ---------- */
+  nav{
+    flex:none; display:flex; background:var(--panel); border-top:1px solid var(--line);
+    padding-bottom:var(--safe-bottom); z-index:1200;
+  }
+  nav button{
+    flex:1; background:none; border:none; color:var(--muted); font-size:11px; font-weight:600;
+    padding:8px 0 6px; cursor:pointer; display:flex; flex-direction:column; align-items:center; gap:2px;
+  }
+  nav button .ico{font-size:22px; line-height:1;}
+  nav button.active{color:var(--accent);}
+
+  /* ---------- Sheets (detail + form) ---------- */
+  .sheet-backdrop{
+    position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:1500;
+    display:none; align-items:flex-end; justify-content:center;
+  }
+  .sheet-backdrop.show{display:flex;}
+  .sheet{
+    background:var(--panel); width:100%; max-width:560px;
+    border-radius:18px 18px 0 0; padding:8px 18px calc(18px + var(--safe-bottom));
+    max-height:85dvh; overflow-y:auto; -webkit-overflow-scrolling:touch;
+  }
+  .grab{width:40px; height:4px; border-radius:2px; background:var(--line); margin:4px auto 12px;}
+  .sheet h2{margin:0 0 2px; font-size:20px;}
+  .sheet .coords{font-size:12px; color:var(--muted); margin-bottom:10px;}
+  .sheet .photo{
+    width:100%; max-height:260px; object-fit:cover; border-radius:12px; margin:10px 0;
+    display:block;
+  }
+  .sheet .desc{font-size:15px; line-height:1.55; color:var(--text); white-space:pre-wrap; margin:8px 0 4px;}
+  .sheet form label{display:block; font-size:13px; font-weight:600; margin:12px 0 4px;}
+  .sheet form input[type=text], .sheet form textarea, .sheet form select{
+    width:100%; padding:11px 12px; border-radius:10px; border:1px solid var(--line);
+    background:var(--panel2); color:var(--text); font-size:15px; outline:none; font-family:inherit;
+  }
+  .sheet form textarea{min-height:84px; resize:vertical;}
+  .catpick{display:flex; gap:8px;}
+  .catpick button{
+    flex:1; padding:10px 0; border-radius:10px; border:1px solid var(--line);
+    background:var(--panel2); color:var(--muted); font-size:14px; font-weight:700; cursor:pointer;
+  }
+  .catpick button.sel[data-c="skate"]{background:var(--skate); color:#0b0f13; border-color:var(--skate);}
+  .catpick button.sel[data-c="fpv"]{background:var(--fpv); color:#0b0f13; border-color:var(--fpv);}
+  .catpick button.sel[data-c="misc"]{background:var(--misc); color:#0b0f13; border-color:var(--misc);}
+  #photoPreview{width:100%; max-height:200px; object-fit:cover; border-radius:12px; margin-top:8px; display:none;}
+  .filebtn{
+    display:inline-block; margin-top:6px; padding:9px 14px; border-radius:10px;
+    background:var(--panel2); border:1px solid var(--line); font-size:14px; font-weight:600; cursor:pointer;
+  }
+  input[type=file]{display:none;}
+  .toast{
+    position:fixed; bottom:calc(86px + var(--safe-bottom)); left:50%; transform:translateX(-50%);
+    background:var(--panel2); border:1px solid var(--line); color:var(--text);
+    padding:10px 18px; border-radius:12px; font-size:14px; z-index:2000;
+    opacity:0; pointer-events:none; transition:opacity .25s; max-width:88%; text-align:center;
+  }
+  .toast.show{opacity:1;}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Mark<span>It</span></div>
+  <div class="chips" id="filterChips">
+    <button class="chip active" data-cat="all">All</button>
+    <button class="chip" data-cat="skate">Skate</button>
+    <button class="chip" data-cat="fpv">FPV</button>
+    <button class="chip" data-cat="misc">Misc</button>
+  </div>
+</header>
+
+<main>
+  <!-- MAP -->
+  <div class="view active" id="mapView">
+    <div id="map"></div>
+    <div id="addBanner">
+      <span>Tap the map to place your pin</span>
+      <button id="useGpsBtn">Use my location</button>
+      <button id="cancelAddBtn">Cancel</button>
+    </div>
+    <button class="map-fab" id="locateBtn" title="My location">◎</button>
+    <button class="map-fab" id="addBtn" title="Add spot">+</button>
+  </div>
+
+  <!-- LIBRARY -->
+  <div class="view" id="libraryView">
+    <input type="text" id="searchBox" placeholder="Search spots…">
+    <div id="cardList"></div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div class="view" id="settingsView">
+    <div class="section">
+      <h2>Your data</h2>
+      <p class="hint">Spots are saved on this device automatically. <span id="spotCount"></span></p>
+      <div class="btnrow">
+        <button class="btn" id="exportBtn">Export file</button>
+        <label class="btn" for="importFile" style="margin:0;">Import file</label>
+        <input type="file" id="importFile" accept=".json,application/json">
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Sync between phone &amp; computer</h2>
+      <p class="hint">Optional. Backs your spots up to your own GitHub repo so every device sees the same pins. Needs a one-time setup — token stays only on this device.</p>
+      <label>Repository (owner/name)</label>
+      <input type="text" id="ghRepo" placeholder="yourname/markit" autocapitalize="off" autocomplete="off">
+      <label>Fine-grained token (contents: read &amp; write)</label>
+      <input type="password" id="ghToken" placeholder="github_pat_…" autocomplete="off">
+      <div class="btnrow">
+        <button class="btn primary" id="backupBtn">Save to cloud</button>
+        <button class="btn" id="restoreBtn">Load from cloud</button>
+      </div>
+      <div id="syncStatus"></div>
+    </div>
+
+    <div class="section">
+      <h2>Danger zone</h2>
+      <div class="btnrow">
+        <button class="btn danger" id="clearBtn">Delete all spots on this device</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<nav>
+  <button class="active" data-view="mapView"><span class="ico">🗺️</span>Map</button>
+  <button data-view="libraryView"><span class="ico">📚</span>Library</button>
+  <button data-view="settingsView"><span class="ico">⚙️</span>Settings</button>
+</nav>
+
+<!-- DETAIL SHEET -->
+<div class="sheet-backdrop" id="detailBackdrop">
+  <div class="sheet" id="detailSheet">
+    <div class="grab"></div>
+    <h2 id="dTitle"></h2>
+    <span class="badge" id="dBadge"></span>
+    <div class="coords" id="dCoords"></div>
+    <img class="photo" id="dPhoto" alt="">
+    <div class="desc" id="dDesc"></div>
+    <div class="btnrow">
+      <button class="btn primary" id="dApple"> Apple Maps</button>
+      <button class="btn" id="dGoogle">Google Maps</button>
+    </div>
+    <div class="btnrow">
+      <button class="btn" id="dEdit">Edit</button>
+      <button class="btn danger" id="dDelete">Delete</button>
+      <button class="btn" id="dClose" style="margin-left:auto;">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- FORM SHEET -->
+<div class="sheet-backdrop" id="formBackdrop">
+  <div class="sheet">
+    <div class="grab"></div>
+    <h2 id="formTitle">New spot</h2>
+    <form id="spotForm">
+      <label>Name</label>
+      <input type="text" id="fName" required placeholder="e.g. Ditch behind the school" autocomplete="off">
+      <label>Category</label>
+      <div class="catpick" id="catPick">
+        <button type="button" data-c="skate">🛹 Skate</button>
+        <button type="button" data-c="fpv">🚁 FPV</button>
+        <button type="button" data-c="misc">📌 Misc</button>
+      </div>
+      <label>Description</label>
+      <textarea id="fDesc" placeholder="Notes, conditions, best time to go…"></textarea>
+      <label>Photo (optional)</label>
+      <label class="filebtn" for="fPhoto">Choose photo</label>
+      <input type="file" id="fPhoto" accept="image/*">
+      <img id="photoPreview" alt="">
+      <div class="btnrow" style="margin-top:16px;">
+        <button type="submit" class="btn primary">Save spot</button>
+        <button type="button" class="btn" id="fCancel">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+"use strict";
+
+/* ================= state & storage ================= */
+const LS_SPOTS = "markit.spots.v1";
+const LS_SETTINGS = "markit.settings.v1";
+const LS_VIEWSTATE = "markit.view.v1";
+
+let spots = load(LS_SPOTS, []);
+let settings = load(LS_SETTINGS, {ghRepo:"", ghToken:""});
+let filter = "all";
+let addMode = false;
+let editingId = null;      // spot id when editing, null when creating
+let pendingLatLng = null;  // where the new pin goes
+let pendingPhoto = null;   // dataURL chosen in form
+let currentDetailId = null;
+
+function load(key, fallback){
+  try{ const v = JSON.parse(localStorage.getItem(key)); return v ?? fallback; }
+  catch(e){ return fallback; }
+}
+function saveSpots(){ localStorage.setItem(LS_SPOTS, JSON.stringify(spots)); refreshAll(); }
+function saveSettings(){ localStorage.setItem(LS_SETTINGS, JSON.stringify(settings)); }
+function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
+
+/* ================= map ================= */
+const AZ_CENTER = [34.25, -111.66], AZ_ZOOM = 7;
+const savedView = load(LS_VIEWSTATE, null);
+const map = L.map("map", {zoomControl:false})
+  .setView(savedView ? savedView.c : AZ_CENTER, savedView ? savedView.z : AZ_ZOOM);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+}).addTo(map);
+map.on("moveend", () => {
+  localStorage.setItem(LS_VIEWSTATE, JSON.stringify({c:[map.getCenter().lat, map.getCenter().lng], z:map.getZoom()}));
+});
+
+const markers = {}; // id -> leaflet marker
+function pinIcon(cat){
+  return L.divIcon({
+    className: "",
+    html: `<div class="pin ${cat}"><div class="head"></div><div class="dot"></div></div>`,
+    iconSize: [30,42], iconAnchor: [15,42]
+  });
+}
+function renderMarkers(){
+  for(const id in markers){ map.removeLayer(markers[id]); delete markers[id]; }
+  for(const s of spots){
+    if(filter !== "all" && s.cat !== filter) continue;
+    const m = L.marker([s.lat, s.lng], {icon: pinIcon(s.cat)}).addTo(map);
+    m.on("click", () => openDetail(s.id));
+    markers[s.id] = m;
+  }
+}
+
+map.on("click", (e) => {
+  if(!addMode) return;
+  startForm(null, e.latlng);
+});
+
+/* add flow */
+const addBanner = document.getElementById("addBanner");
+document.getElementById("addBtn").addEventListener("click", () => {
+  addMode = true;
+  addBanner.classList.add("show");
+  showView("mapView");
+});
+document.getElementById("cancelAddBtn").addEventListener("click", exitAddMode);
+function exitAddMode(){ addMode = false; addBanner.classList.remove("show"); }
+
+document.getElementById("useGpsBtn").addEventListener("click", () => {
+  toast("Getting your location…");
+  navigator.geolocation.getCurrentPosition(
+    p => startForm(null, L.latLng(p.coords.latitude, p.coords.longitude)),
+    () => toast("Couldn't get location — tap the map instead"),
+    {enableHighAccuracy:true, timeout:10000}
+  );
+});
+
+document.getElementById("locateBtn").addEventListener("click", () => {
+  toast("Finding you…");
+  navigator.geolocation.getCurrentPosition(
+    p => map.setView([p.coords.latitude, p.coords.longitude], Math.max(map.getZoom(), 15)),
+    () => toast("Couldn't get your location"),
+    {enableHighAccuracy:true, timeout:10000}
+  );
+});
+
+/* ================= views & filter ================= */
+function showView(id){
+  document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === id));
+  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b.dataset.view === id));
+  if(id === "mapView") setTimeout(() => map.invalidateSize(), 60);
+  if(id === "libraryView") renderLibrary();
+  if(id === "settingsView") renderSettings();
+}
+document.querySelectorAll("nav button").forEach(b =>
+  b.addEventListener("click", () => showView(b.dataset.view)));
+
+document.getElementById("filterChips").addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip");
+  if(!chip) return;
+  filter = chip.dataset.cat;
+  document.querySelectorAll("#filterChips .chip").forEach(c =>
+    c.classList.toggle("active", c === chip));
+  refreshAll();
+});
+
+function refreshAll(){
+  renderMarkers();
+  if(document.getElementById("libraryView").classList.contains("active")) renderLibrary();
+  if(document.getElementById("settingsView").classList.contains("active")) renderSettings();
+}
+
+/* ================= library ================= */
+const CAT_EMOJI = {skate:"🛹", fpv:"🚁", misc:"📌"};
+function renderLibrary(){
+  const q = document.getElementById("searchBox").value.trim().toLowerCase();
+  const list = document.getElementById("cardList");
+  const items = spots
+    .filter(s => (filter === "all" || s.cat === filter))
+    .filter(s => !q || s.title.toLowerCase().includes(q) || (s.desc||"").toLowerCase().includes(q))
+    .sort((a,b) => b.created - a.created);
+  if(items.length === 0){
+    list.innerHTML = `<div class="empty">No spots here yet.<br>Go to the map and hit <b>+</b> to add your first one.</div>`;
+    return;
+  }
+  list.innerHTML = "";
+  for(const s of items){
+    const card = document.createElement("div");
+    card.className = "card";
+    const thumb = s.photo
+      ? `<div class="thumb" style="background-image:url('${s.photo}')"></div>`
+      : `<div class="thumb">${CAT_EMOJI[s.cat] || "📌"}</div>`;
+    card.innerHTML = `${thumb}
+      <div class="body">
+        <h3>${esc(s.title)}</h3>
+        <span class="badge ${s.cat}">${s.cat}</span>
+        <p>${esc(s.desc || "")}</p>
+      </div>`;
+    card.addEventListener("click", () => {
+      showView("mapView");
+      map.setView([s.lat, s.lng], Math.max(map.getZoom(), 15));
+      openDetail(s.id);
+    });
+    list.appendChild(card);
+  }
+}
+document.getElementById("searchBox").addEventListener("input", renderLibrary);
+function esc(str){ const d = document.createElement("div"); d.textContent = str; return d.innerHTML; }
+
+/* ================= detail sheet ================= */
+const detailBackdrop = document.getElementById("detailBackdrop");
+function openDetail(id){
+  const s = spots.find(x => x.id === id);
+  if(!s) return;
+  currentDetailId = id;
+  document.getElementById("dTitle").textContent = s.title;
+  const badge = document.getElementById("dBadge");
+  badge.textContent = s.cat; badge.className = "badge " + s.cat;
+  document.getElementById("dCoords").textContent = s.lat.toFixed(5) + ", " + s.lng.toFixed(5);
+  const ph = document.getElementById("dPhoto");
+  if(s.photo){ ph.src = s.photo; ph.style.display = "block"; }
+  else { ph.style.display = "none"; ph.removeAttribute("src"); }
+  document.getElementById("dDesc").textContent = s.desc || "";
+  detailBackdrop.classList.add("show");
+}
+function closeDetail(){ detailBackdrop.classList.remove("show"); currentDetailId = null; }
+document.getElementById("dClose").addEventListener("click", closeDetail);
+detailBackdrop.addEventListener("click", e => { if(e.target === detailBackdrop) closeDetail(); });
+
+document.getElementById("dApple").addEventListener("click", () => {
+  const s = spots.find(x => x.id === currentDetailId); if(!s) return;
+  window.open(`https://maps.apple.com/?ll=${s.lat},${s.lng}&q=${encodeURIComponent(s.title)}`, "_blank");
+});
+document.getElementById("dGoogle").addEventListener("click", () => {
+  const s = spots.find(x => x.id === currentDetailId); if(!s) return;
+  window.open(`https://www.google.com/maps/search/?api=1&query=${s.lat},${s.lng}`, "_blank");
+});
+document.getElementById("dDelete").addEventListener("click", () => {
+  const s = spots.find(x => x.id === currentDetailId); if(!s) return;
+  if(!confirm(`Delete "${s.title}"?`)) return;
+  spots = spots.filter(x => x.id !== s.id);
+  saveSpots(); closeDetail(); toast("Spot deleted");
+});
+document.getElementById("dEdit").addEventListener("click", () => {
+  const s = spots.find(x => x.id === currentDetailId); if(!s) return;
+  closeDetail();
+  startForm(s, null);
+});
+
+/* ================= form sheet ================= */
+const formBackdrop = document.getElementById("formBackdrop");
+let formCat = "misc";
+
+function startForm(existing, latlng){
+  exitAddMode();
+  editingId = existing ? existing.id : null;
+  pendingLatLng = existing ? L.latLng(existing.lat, existing.lng) : latlng;
+  pendingPhoto = existing ? existing.photo : null;
+  document.getElementById("formTitle").textContent = existing ? "Edit spot" : "New spot";
+  document.getElementById("fName").value = existing ? existing.title : "";
+  document.getElementById("fDesc").value = existing ? (existing.desc || "") : "";
+  setFormCat(existing ? existing.cat : "misc");
+  const prev = document.getElementById("photoPreview");
+  if(pendingPhoto){ prev.src = pendingPhoto; prev.style.display = "block"; }
+  else { prev.style.display = "none"; prev.removeAttribute("src"); }
+  document.getElementById("fPhoto").value = "";
+  formBackdrop.classList.add("show");
+}
+function setFormCat(c){
+  formCat = c;
+  document.querySelectorAll("#catPick button").forEach(b =>
+    b.classList.toggle("sel", b.dataset.c === c));
+}
+document.getElementById("catPick").addEventListener("click", e => {
+  const b = e.target.closest("button"); if(b) setFormCat(b.dataset.c);
+});
+document.getElementById("fCancel").addEventListener("click", () => formBackdrop.classList.remove("show"));
+formBackdrop.addEventListener("click", e => { if(e.target === formBackdrop) formBackdrop.classList.remove("show"); });
+
+document.getElementById("fPhoto").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if(!file) return;
+  try{
+    pendingPhoto = await resizeImage(file, 900, 0.72);
+    const prev = document.getElementById("photoPreview");
+    prev.src = pendingPhoto; prev.style.display = "block";
+  }catch(err){ toast("Couldn't read that photo"); }
+});
+
+function resizeImage(file, maxDim, quality){
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let {width:w, height:h} = img;
+      const scale = Math.min(1, maxDim / Math.max(w, h));
+      w = Math.round(w * scale); h = Math.round(h * scale);
+      const canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+      resolve(canvas.toDataURL("image/jpeg", quality));
+    };
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
+document.getElementById("spotForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const title = document.getElementById("fName").value.trim();
+  if(!title || !pendingLatLng) return;
+  const desc = document.getElementById("fDesc").value.trim();
+  if(editingId){
+    const s = spots.find(x => x.id === editingId);
+    Object.assign(s, {title, desc, cat: formCat, photo: pendingPhoto});
+  } else {
+    spots.push({
+      id: uid(), title, desc, cat: formCat,
+      lat: pendingLatLng.lat, lng: pendingLatLng.lng,
+      photo: pendingPhoto, created: Date.now()
+    });
+  }
+  try{ saveSpots(); }
+  catch(err){
+    toast("Storage full — try a smaller photo or export a backup");
+    return;
+  }
+  formBackdrop.classList.remove("show");
+  toast(editingId ? "Spot updated" : "Spot saved ✔");
+  editingId = null;
+});
+
+/* ================= settings, export/import ================= */
+function renderSettings(){
+  document.getElementById("spotCount").textContent = `You have ${spots.length} spot${spots.length===1?"":"s"}.`;
+  document.getElementById("ghRepo").value = settings.ghRepo || "";
+  document.getElementById("ghToken").value = settings.ghToken || "";
+}
+document.getElementById("ghRepo").addEventListener("change", e => { settings.ghRepo = e.target.value.trim(); saveSettings(); });
+document.getElementById("ghToken").addEventListener("change", e => { settings.ghToken = e.target.value.trim(); saveSettings(); });
+
+document.getElementById("exportBtn").addEventListener("click", () => {
+  const blob = new Blob([JSON.stringify(spots, null, 2)], {type:"application/json"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "markit-spots-" + new Date().toISOString().slice(0,10) + ".json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+document.getElementById("importFile").addEventListener("change", async (e) => {
+  const file = e.target.files[0]; if(!file) return;
+  try{
+    const data = JSON.parse(await file.text());
+    if(!Array.isArray(data)) throw new Error("bad format");
+    mergeSpots(data);
+    toast("Imported ✔");
+  }catch(err){ toast("That file doesn't look like a MarkIt export"); }
+  e.target.value = "";
+});
+function mergeSpots(incoming){
+  const byId = Object.fromEntries(spots.map(s => [s.id, s]));
+  for(const s of incoming){
+    if(s && s.id && typeof s.lat === "number" && typeof s.lng === "number") byId[s.id] = s;
+  }
+  spots = Object.values(byId);
+  saveSpots();
+}
+document.getElementById("clearBtn").addEventListener("click", () => {
+  if(!confirm("Delete ALL spots on this device? (Cloud backup, if any, is not touched.)")) return;
+  spots = []; saveSpots(); toast("All spots deleted");
+});
+
+/* ================= GitHub sync ================= */
+const GH_PATH = "data/spots.json";
+function ghReady(){
+  if(!settings.ghRepo || !settings.ghToken){
+    syncMsg("Fill in the repository and token first.");
+    return false;
+  }
+  return true;
+}
+function syncMsg(t){ document.getElementById("syncStatus").textContent = t; }
+function ghHeaders(extra){
+  return Object.assign({
+    "Authorization": "Bearer " + settings.ghToken,
+    "X-GitHub-Api-Version": "2022-11-28"
+  }, extra || {});
+}
+function b64encodeUtf8(str){
+  const bytes = new TextEncoder().encode(str);
+  let bin = "";
+  const chunk = 0x8000;
+  for(let i = 0; i < bytes.length; i += chunk){
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(bin);
+}
+
+document.getElementById("backupBtn").addEventListener("click", async () => {
+  if(!ghReady()) return;
+  syncMsg("Saving to GitHub…");
+  const base = `https://api.github.com/repos/${settings.ghRepo}/contents/${GH_PATH}`;
+  try{
+    let sha = null;
+    const head = await fetch(base, {headers: ghHeaders({"Accept":"application/vnd.github+json"})});
+    if(head.ok){ sha = (await head.json()).sha; }
+    else if(head.status !== 404){ throw new Error("HTTP " + head.status); }
+    const body = {
+      message: "Update spots (" + new Date().toLocaleString() + ")",
+      content: b64encodeUtf8(JSON.stringify(spots, null, 2))
+    };
+    if(sha) body.sha = sha;
+    const res = await fetch(base, {method:"PUT", headers: ghHeaders(), body: JSON.stringify(body)});
+    if(!res.ok) throw new Error("HTTP " + res.status);
+    syncMsg("✔ Saved to cloud " + new Date().toLocaleTimeString());
+  }catch(err){
+    syncMsg("Save failed (" + err.message + "). Check repo name and token.");
+  }
+});
+
+document.getElementById("restoreBtn").addEventListener("click", async () => {
+  if(!ghReady()) return;
+  syncMsg("Loading from GitHub…");
+  const base = `https://api.github.com/repos/${settings.ghRepo}/contents/${GH_PATH}`;
+  try{
+    const res = await fetch(base, {headers: ghHeaders({"Accept":"application/vnd.github.raw+json"})});
+    if(res.status === 404){ syncMsg("No cloud backup found yet — hit Save to cloud first."); return; }
+    if(!res.ok) throw new Error("HTTP " + res.status);
+    const data = JSON.parse(await res.text());
+    if(!Array.isArray(data)) throw new Error("bad data");
+    mergeSpots(data);
+    syncMsg("✔ Loaded " + data.length + " spots from cloud");
+  }catch(err){
+    syncMsg("Load failed (" + err.message + "). Check repo name and token.");
+  }
+});
+
+/* ================= misc ================= */
+let toastTimer = null;
+function toast(t){
+  const el = document.getElementById("toast");
+  el.textContent = t;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 2600);
+}
+
+renderMarkers();
+</script>
+</body>
+</html>
